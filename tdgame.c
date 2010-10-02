@@ -56,16 +56,16 @@ typedef union {
 
 
 typedef struct {
-	int slot;
-	float value;
-} move_value_t;
+	uint_t slot[8];
+	float value[8];
+} move_list_t;
 
 typedef struct {
 	int depth;
 	float alpha;
 	float beta;
 	uint_t move_count;
-	move_value_t moves[8];
+	move_list_t moves;
 } tdgame_ht_value_t;
 
 typedef struct tdgame_ht_entry tdgame_ht_entry_t;
@@ -386,7 +386,6 @@ tdgame_ht_store(tdgame_ht_t *ht, const tdgame_id_t *id)
 	ht->entry_count += 1;
 
 	entry->next = new_entry;
-	new_entry->next = NULL;
 	memcpy(&new_entry->id, id, sizeof(tdgame_id_t));
 
 	return &new_entry->value;
@@ -422,7 +421,7 @@ tdgame_evaluate(const tdgame_t *game)
 }
 
 static uint_t
-tdgame_fill_move_list(const tdgame_t *game, uint_t moves[8])
+tdgame_fill_move_list(const tdgame_t *game, move_list_t *moves)
 {
 	const uint_t default_order[] = { 0, 7, 1, 6, 2, 5, 3, 4 };
 
@@ -432,9 +431,9 @@ tdgame_fill_move_list(const tdgame_t *game, uint_t moves[8])
 		const lever_t *lever = &game->levers[LEVER_INDEX(0, slot/2)];
 
 		if (!lever->coin ||
-		    (lever->state == LEVER_STATE_LEFT && (slot % 2) == 1) ||
-		    (lever->state == LEVER_STATE_RIGHT && (slot % 2) == 0)) {
-			moves[move_count] = slot;
+		    ((slot % 2) == (lever->state == LEVER_STATE_LEFT))) {
+			moves->slot[move_count] = slot;
+			moves->value[slot] = -INFINITY;
 			move_count += 1;
 		}
 	}
@@ -443,26 +442,9 @@ tdgame_fill_move_list(const tdgame_t *game, uint_t moves[8])
 }
 
 static void
-move_list_sort_by_value(move_value_t moves[], uint_t size)
+moves_sort_by_table(uint_t moves[], uint_t size, const float table[8])
 {
 	/* Insertion sort. */
-	for (uint_t i = 1; i < size; i++) {
-		move_value_t key;
-		memcpy(&key, &moves[i], sizeof(move_value_t));
-
-		int j = i - 1;
-		while (j >= 0 && moves[j].value < key.value) {
-			memcpy(&moves[j+1], &moves[j], sizeof(move_value_t));
-			j -= 1;
-		}
-
-		memcpy(&moves[j+1], &key, sizeof(move_value_t));
-	}
-}
-
-static void
-move_list_sort_by_table(uint_t moves[], uint_t size, float table[8])
-{
 	for (uint_t i = 1; i < size; i++) {
 		uint_t key = moves[i];
 
@@ -472,29 +454,17 @@ move_list_sort_by_table(uint_t moves[], uint_t size, float table[8])
 			j -= 1;
 		}
 
-		moves[j+i] = key;
-	}
-}
-
-static void
-move_table_from_list(float table[8], const move_value_t moves[], uint_t size)
-{
-	for (uint_t i = 0; i < 8; i++) {
-		table[i] = -INFINITY;
-	}
-
-	for (uint_t i = 0; i < size; i++) {
-		table[moves[i].slot] = moves[i].value;
+		moves[j+1] = key;
 	}
 }
 
 static uint_t
 tdgame_predict(const tdgame_t *game, tdgame_ht_t *ht, int depth,
-	       float alpha, float beta, move_value_t best_moves[8])
+	       float alpha, float beta, move_list_t *moves)
 {
 	if (tdgame_is_done(game)) {
-		best_moves[0].value = tdgame_evaluate_done(game);
-		best_moves[0].slot = -1;
+		moves->slot[0] = 0;
+		moves->value[0] = tdgame_evaluate_done(game);
 		return 1;
 	}
 
@@ -502,71 +472,66 @@ tdgame_predict(const tdgame_t *game, tdgame_ht_t *ht, int depth,
 	tdgame_id_init(&id, game);
 	tdgame_ht_value_t *stored = tdgame_ht_lookup(ht, &id);
 	if (stored != NULL) {
-		move_value_t *best_stored = &stored->moves[0];
+	        float best_stored = stored->moves.value[stored->moves.slot[0]];
+
 		if (stored->depth >= depth) {
-			if (best_stored->value > stored->alpha &&
-			    best_stored->value < stored->beta) {
+			if (best_stored > stored->alpha &&
+			    best_stored < stored->beta) {
 				/* Exact value */
-				memcpy(best_moves, stored->moves,
-				       stored->move_count *
-				       sizeof(move_value_t));
+				memcpy(moves, &stored->moves,
+				       sizeof(move_list_t));
 				return stored->move_count;
-			} else if (best_stored->value >= stored->beta) {
+			} else if (best_stored >= stored->beta) {
 				/* Lower bound */
-				alpha = max(alpha, best_stored->value);
-			} else if (best_stored->value <= stored->alpha) {
+				alpha = max(alpha, best_stored);
+			} else if (best_stored <= stored->alpha) {
 				/* Upper bound */
-				beta = min(beta, best_stored->value);
+				beta = min(beta, best_stored);
 			}
 
 			if (alpha >= beta) {
-				memcpy(best_moves, stored->moves,
-				       stored->move_count *
-				       sizeof(move_value_t));
+				memcpy(moves, &stored->moves,
+				       sizeof(move_list_t));
 				return stored->move_count;
 			}
 		}
 	}
 
 	float score = -INFINITY;
-
-	uint_t moves[8];
 	uint_t move_count = tdgame_fill_move_list(game, moves);
 
 	if (stored != NULL) {
-		float table[8];
-		move_table_from_list(table, stored->moves, stored->move_count);
-		move_list_sort_by_table(moves, move_count, table);
+		moves_sort_by_table(moves->slot, move_count,
+				    stored->moves.value);
 	}
 
-	uint_t best_moves_count = 0;
+	uint_t next_move_count = 0;
 
 	for (int i = 0; i < move_count; i++) {
+		uint_t slot = moves->slot[i];
+
 		tdgame_t test_game;
 		memcpy(&test_game, game, sizeof(tdgame_t));
-		tdgame_drop_coin(&test_game, moves[i]);
+		tdgame_drop_coin(&test_game, slot);
 
 		float value = 0.0;
 		if (depth <= 0) {
 			value = -tdgame_evaluate(&test_game);
 		} else {
-			move_value_t best_moves[8];
+			move_list_t bmoves;
 			tdgame_predict(&test_game, ht, depth-1,
-				       -beta, -max(alpha, score),
-				       best_moves);
-			value = -best_moves[0].value;
+				       -beta, -max(alpha, score), &bmoves);
+			value = -bmoves.value[bmoves.slot[0]];
 		}
 
-		best_moves[best_moves_count].slot = moves[i];
-		best_moves[best_moves_count].value = value;
-		best_moves_count += 1;
+		moves->value[slot] = value;
+		next_move_count += 1;
 
 		score = max(score, value);
-
 		if (score >= beta) break;
 	}
 
-	move_list_sort_by_value(best_moves, best_moves_count);
+	moves_sort_by_table(moves->slot, next_move_count, moves->value);
 
 	if (stored == NULL || stored->depth <= depth) {
 		if (stored == NULL) stored = tdgame_ht_store(ht, &id);
@@ -574,12 +539,11 @@ tdgame_predict(const tdgame_t *game, tdgame_ht_t *ht, int depth,
 		stored->alpha = alpha;
 		stored->beta = beta;
 
-		stored->move_count = best_moves_count;
-		memcpy(stored->moves, best_moves,
-		       best_moves_count*sizeof(move_value_t));
+		stored->move_count = next_move_count;
+		memcpy(&stored->moves, moves, sizeof(move_list_t));
 	}
 
-	return best_moves_count;
+	return next_move_count;
 }
 
 int
@@ -615,15 +579,16 @@ main(int argc, char *argv[])
 
 	int depth = atoi(argv[1]);
 	while (1) {
-		move_value_t best_moves[8];
+		move_list_t moves;
 		uint_t move_count = tdgame_predict(&game, &game_ht, depth,
 						   -INFINITY, INFINITY,
-						   best_moves);
+						   &moves);
+
 		printf("%i: Suggests: ", depth);
 		for (uint_t i = 0; i < move_count; i++) {
 			if (i > 0) fputs(", ", stdout);
-			printf("%i: %.1f", best_moves[i].slot+1,
-			       best_moves[i].value);
+			printf("%i: %.1f", moves.slot[i]+1,
+			       moves.value[moves.slot[i]]);
 		}
 		fputs("\n", stdout);
 		printf("  entries: %i\n", game_ht.entry_count);
