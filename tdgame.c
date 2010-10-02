@@ -55,8 +55,10 @@ typedef union {
 } tdgame_id_t;
 
 
+typedef uint8_t slot_t;
+
 typedef struct {
-	uint_t slot[8];
+	slot_t slot[8];
 	float value[8];
 } move_list_t;
 
@@ -442,11 +444,11 @@ tdgame_fill_move_list(const tdgame_t *game, move_list_t *moves)
 }
 
 static void
-moves_sort_by_table(uint_t moves[], uint_t size, const float table[8])
+moves_sort_by_table(slot_t moves[], uint_t size, const float table[8])
 {
 	/* Insertion sort. */
 	for (uint_t i = 1; i < size; i++) {
-		uint_t key = moves[i];
+		slot_t key = moves[i];
 
 		int j = i - 1;
 		while (j >= 0 && table[moves[j]] < table[key]) {
@@ -578,7 +580,8 @@ main(int argc, char *argv[])
 	tdgame_print(&game);
 
 	int depth = atoi(argv[1]);
-	while (1) {
+	int max_depth = atoi(argv[2]);
+	while (depth <= max_depth) {
 		move_list_t moves;
 		uint_t move_count = tdgame_predict(&game, &game_ht, depth,
 						   -INFINITY, INFINITY,
